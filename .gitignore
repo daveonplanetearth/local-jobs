@@ -29,3 +29,9 @@ coverage/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Azure Functions local settings
+api/local.settings.json
+
+# Azure Static Web Apps CLI
+.swa/
