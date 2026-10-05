@@ -13,6 +13,8 @@ const TOWNS =["Horsham", "Crawley", "Billingshurst"];
 const TOWN_POSTCODES={Horsham:/^RH1[23]\b/i,Crawley:/^RH1[01]\b/i,Billingshurst:/^RH14\b/i};
 
 const clean = (v = "") => v.replace(/\s+/g, " ").trim();
+// Normalises a source date to an ISO string, or null when missing or unparseable. Only some sources give a posted date.
+function isoDate(v) { const d=v?new Date(v):null; return d&&!isNaN(d)?d.toISOString():null; }
 function absoluteUrl(href, origin) { try { return href ? new URL(href, origin).href : null; } catch { return null; } }
 async function fetchHtml(url) {
   const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; LocalJobsViewer/1.1; personal job search)", Accept: "text/html,application/xhtml+xml" }, signal: AbortSignal.timeout(15000) });
@@ -32,7 +34,7 @@ function parseTesco(html) {
     const rest=clean(clean($card.text()).replace(title,""));
     const date=rest.match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})(?:\s*\([^)]*\))?/), contract=rest.match(/\b(Permanent|Temporary|Fixed Term|Part[- ]?time|Full[- ]?time)\b/i), salary=rest.match(/(£[\d,.]+(?:\s*(?:Per Hour|per hour|Pro Rata))?|Competitive[^,]*)/i);
     let location=rest; for(const m of [contract?.[0],salary?.[0],date?.[0]]) if(m) location=clean(location.replace(m,""));
-    jobs.push({ company:"Tesco", title, location:location.replace(/\([^)]*\)/g,"").trim()||"Billingshurst", contract:contract?.[0]||null, salary:salary?.[0]||null, closingDate:date?.[1]||null, url }); seen.add(url);
+    jobs.push({ company:"Tesco", title, location:location.replace(/\([^)]*\)/g,"").trim()||"Billingshurst", contract:contract?.[0]||null, salary:salary?.[0]||null, closingDate:date?.[1]||null, postedDate:null, url }); seen.add(url);
   }); return jobs;
 }
 
@@ -75,7 +77,7 @@ async function getScrewfixJobs() {
   const jobs=[];
   for(const j of all){
     const town=TOWNS.find(t=>new RegExp(`\\b${t}\\b`,"i").test(j.location||"")); if(!town) continue;
-    jobs.push({company:"Screwfix",title:clean(j.jobTitle),location:clean(j.location),town,contract:j.contract?clean(j.contract):null,salary:j.salary||null,closingDate:null,url:absoluteUrl(j.url,SCREWFIX_ORIGIN)});
+    jobs.push({company:"Screwfix",title:clean(j.jobTitle),location:clean(j.location),town,contract:j.contract?clean(j.contract):null,salary:j.salary||null,closingDate:null,postedDate:isoDate(j.updatedDate),url:absoluteUrl(j.url,SCREWFIX_ORIGIN)});
   }
   return [...new Map(jobs.map(j=>[j.url,j])).values()];
 }
@@ -99,7 +101,7 @@ async function getLidlJobs() {
     const town=TOWNS.find(t=>new RegExp(`\\b${t}\\b`,"i").test(place)); if(!town) continue;
     const salary=(j.descResponsibilities||"").match(/£[\d.,]+(?:\s*-\s*£[\d.,]+)?\s*per (?:hour|annum|year)/i)?.[0]||null;
     const until=j.onlineUntil?new Date(j.onlineUntil):null;
-    jobs.push({company:"Lidl",title:clean(j.title),location:clean([loc.address,loc.city,loc.zipCode].filter(Boolean).join(", "))||town,town,contract:[j.contractType,j.categories?.contract_duration?.value].filter(Boolean).join(" - ")||null,salary,closingDate:until?until.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit",year:"2-digit",timeZone:"Europe/London"}):null,url:j.jobDetailUrl||absoluteUrl(j.availableLanguages?.[0]?.href,LIDL_ORIGIN)});
+    jobs.push({company:"Lidl",title:clean(j.title),location:clean([loc.address,loc.city,loc.zipCode].filter(Boolean).join(", "))||town,town,contract:[j.contractType,j.categories?.contract_duration?.value].filter(Boolean).join(" - ")||null,salary,closingDate:until?until.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit",year:"2-digit",timeZone:"Europe/London"}):null,postedDate:isoDate(j.onlineFrom),url:j.jobDetailUrl||absoluteUrl(j.availableLanguages?.[0]?.href,LIDL_ORIGIN)});
   }
   return [...new Map(jobs.map(j=>[j.url,j])).values()];
 }
@@ -108,7 +110,7 @@ function parseToolstation(html) {
   const $=cheerio.load(html), field=($j,id)=>clean($j.find(`[data-id="div_content_${id}"]`).text())||null;
   return $(".vsr-job").map((_,el)=>{
     const $j=$(el), $a=$j.find(".vsr-job__title a").first(), end=field($j,"VacV_AdvertisingEndDate"), endDate=end?new Date(`${end} 12:00 UTC`):null;
-    return {company:"Toolstation",title:clean($a.text()),location:field($j,"VacV_LocationID")||"",contract:field($j,"Question_1_262"),salary:field($j,"VacV_DisplaySalary"),closingDate:endDate&&!isNaN(endDate)?endDate.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit",year:"2-digit",timeZone:"Europe/London"}):end,url:absoluteUrl($a.attr("href"),TOOLSTATION_SEARCH)};
+    return {company:"Toolstation",title:clean($a.text()),location:field($j,"VacV_LocationID")||"",contract:field($j,"Question_1_262"),salary:field($j,"VacV_DisplaySalary"),closingDate:endDate&&!isNaN(endDate)?endDate.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit",year:"2-digit",timeZone:"Europe/London"}):end,postedDate:null,url:absoluteUrl($a.attr("href"),TOOLSTATION_SEARCH)};
   }).get();
 }
 
@@ -149,7 +151,7 @@ async function getMcDonaldsJobs() {
   for(const j of (await r.json()).hits||[]){
     const town=TOWNS.find(t=>new RegExp(`\\b${t}\\b`,"i").test(j.display_address||"")); if(!town) continue;
     const salary=j.display_salary?clean(j.display_salary).replace(/^(?=\d)/,"£"):null;
-    jobs.push({company:"McDonald's",title:clean(j.title),location:clean(j.display_address),town,contract:j.contract_type?clean(j.contract_type):null,salary,closingDate:null,url:absoluteUrl(j.jd_url,MCDONALDS_ORIGIN)});
+    jobs.push({company:"McDonald's",title:clean(j.title),location:clean(j.display_address),town,contract:j.contract_type?clean(j.contract_type):null,salary,closingDate:null,postedDate:null,url:absoluteUrl(j.jd_url,MCDONALDS_ORIGIN)});
   }
   return [...new Map(jobs.map(j=>[j.url,j])).values()];
 }
@@ -172,7 +174,7 @@ async function getCoopJobs() {
   for(const $ of [first,...rest]) $("#search-results-jobs li a[href]").each((_,el)=>{
     const $a=$(el), title=clean($a.find(".global-job-list__job-title").text()), location=clean($a.find(".job-location").text());
     const town=TOWNS.find(t=>new RegExp(`\\b${t}\\b`,"i").test(`${location} ${title}`)); if(!town||!title) return;
-    jobs.push({company:"Co-op",title,location,town,contract:clean($a.find(".job-contract").text())||null,salary:clean($a.find(".job-level").text())||null,closingDate:null,url:absoluteUrl($a.attr("href"),COOP_ORIGIN)});
+    jobs.push({company:"Co-op",title,location,town,contract:clean($a.find(".job-contract").text())||null,salary:clean($a.find(".job-level").text())||null,closingDate:null,postedDate:null,url:absoluteUrl($a.attr("href"),COOP_ORIGIN)});
   });
   return [...new Map(jobs.map(j=>[j.url,j])).values()];
 }
@@ -193,7 +195,7 @@ async function getCostaJobs() {
   for(const j of [first,...rest].flatMap(d=>d.results||[])){
     const title=clean(j.post_title), location=clean(j.full_location);
     const town=TOWNS.find(t=>new RegExp(`\\b${t}\\b`,"i").test(`${location} ${title}`)); if(!town||!j.permalink) continue;
-    jobs.push({company:"Costa",title,location,town,contract:j.employment_indicator?clean(j.employment_indicator):null,salary:null,closingDate:null,url:j.permalink});
+    jobs.push({company:"Costa",title,location,town,contract:j.employment_indicator?clean(j.employment_indicator):null,salary:null,closingDate:null,postedDate:j.posted_at?isoDate(`${j.posted_at.replace(" ","T")}Z`):null,url:j.permalink});
   }
   return [...new Map(jobs.map(j=>[j.url,j])).values()];
 }
@@ -208,7 +210,7 @@ async function getStarbucksJobs() {
   for(const j of await r.json()){
     const [title,store]=clean(j.jobTitle).split(/\s+-\s+Store#\s*/i), postcode=clean(j.postalCode);
     const town=TOWNS.find(t=>new RegExp(`\\b${t}\\b`,"i").test(`${j.city} ${store||""}`))||TOWNS.find(t=>TOWN_POSTCODES[t].test(postcode)); if(!town||!j.externalURLRet) continue;
-    jobs.push({company:"Starbucks",title,location:[store?.replace(/^\d+,\s*/,""),j.city,postcode].filter(Boolean).map(clean).join(", ")||town,town,contract:null,salary:null,closingDate:null,url:j.externalURLRet});
+    jobs.push({company:"Starbucks",title,location:[store?.replace(/^\d+,\s*/,""),j.city,postcode].filter(Boolean).map(clean).join(", ")||town,town,contract:null,salary:null,closingDate:null,postedDate:null,url:j.externalURLRet});
   }
   return [...new Map(jobs.map(j=>[j.url,j])).values()];
 }
@@ -231,7 +233,7 @@ async function getMorrisonsJobs() {
     const town=TOWNS.find(t=>new RegExp(`\\b${t}\\b`,"i").test(location))||TOWNS.find(t=>TOWN_POSTCODES[t].test(postcode)); if(!town||!j.job_url) continue;
     const closing=j.closing_date?new Date(`${j.closing_date.replace(" ","T")}Z`):null;
     // salary_display is the same "Competitive salary" boilerplate on every job, so leave it out.
-    jobs.push({company:"Morrisons",title:clean(j.job_title),location:location||town,town,contract:[j.contract_type,j.hours_per_week&&`${j.hours_per_week} hrs/week`].filter(Boolean).join(" - ")||null,salary:null,closingDate:closing&&!isNaN(closing)?closing.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit",year:"2-digit",timeZone:"Europe/London"}):null,url:j.job_url});
+    jobs.push({company:"Morrisons",title:clean(j.job_title),location:location||town,town,contract:[j.contract_type,j.hours_per_week&&`${j.hours_per_week} hrs/week`].filter(Boolean).join(" - ")||null,salary:null,closingDate:closing&&!isNaN(closing)?closing.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit",year:"2-digit",timeZone:"Europe/London"}):null,postedDate:j.ats_created_timestamp_utc?isoDate(`${j.ats_created_timestamp_utc.replace(" ","T")}Z`):null,url:j.job_url});
   }
   return [...new Map(jobs.map(j=>[j.url,j])).values()];
 }
@@ -242,7 +244,7 @@ function parseSainsburys(html) {
     // The subheading is "Store <br> Postcode <br> Salary <br> Contract", with salary or contract sometimes missing.
     const $c=$(el), parts=($c.find("h4 span").html()||"").split(/<br\s*\/?>/i).map(s=>clean(cheerio.load(s).text())).filter(Boolean);
     const postcode=parts.find(p=>/^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$/i.test(p))||"", salary=parts.find(p=>/£|competitive|per hour|per annum|salary/i.test(p))||null, contract=parts.find(p=>/permanent|temporary|fixed|seasonal|part[- ]?time|full[- ]?time/i.test(p))||null;
-    return {company:"Sainsbury's",title:clean($c.find("h3").text()),location:parts.filter(p=>p!==salary&&p!==contract).join(", "),postcode,contract,salary,closingDate:null,url:absoluteUrl($c.find("a[href]").last().attr("href"),"https://www.sainsburys.jobs")};
+    return {company:"Sainsbury's",title:clean($c.find("h3").text()),location:parts.filter(p=>p!==salary&&p!==contract).join(", "),postcode,contract,salary,closingDate:null,postedDate:null,url:absoluteUrl($c.find("a[href]").last().attr("href"),"https://www.sainsburys.jobs")};
   }).get();
   const range=clean($(".pagination-div span").first().text()).match(/(\d+)\s*of\s*(\d+)/);
   return {jobs,more:!!range&&Number(range[1])<Number(range[2])};
